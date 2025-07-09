@@ -23,7 +23,7 @@ from mem0.configs.prompts import (
 from mem0.memory.base import MemoryBase
 from mem0.memory.setup import mem0_dir, setup_config
 from mem0.memory.storage import SQLiteManager
-from mem0.memory.telemetry import capture_event
+from mem0.memory.telemetry import AnonymousTelemetry, capture_event
 from mem0.memory.utils import (
     get_fact_retrieval_messages,
     parse_messages,
@@ -110,6 +110,29 @@ def _build_filters_and_metadata(
     return base_metadata_template, effective_query_filters
 
 
+def _build_event_data(mem, additional_data=None):
+    # Precompute class/module names only once for each instance; reuse
+    if not hasattr(mem, "_event_telemetry_cache"):
+        mem._event_telemetry_cache = {
+            "collection": mem.collection_name,
+            "vector_size": mem.embedding_model.config.embedding_dims,
+            "history_store": "sqlite",
+            "graph_store": (
+                f"{mem.graph.__class__.__module__}.{mem.graph.__class__.__name__}"
+                if mem.config.graph_store.config and mem.graph is not None
+                else None
+            ),
+            "vector_store": (f"{mem.vector_store.__class__.__module__}.{mem.vector_store.__class__.__name__}"),
+            "llm": (f"{mem.llm.__class__.__module__}.{mem.llm.__class__.__name__}"),
+            "embedding_model": (f"{mem.embedding_model.__class__.__module__}.{mem.embedding_model.__class__.__name__}"),
+            "function": (f"{mem.__class__.__module__}.{mem.__class__.__name__}.{mem.api_version}"),
+        }
+    event_data = mem._event_telemetry_cache.copy()
+    if additional_data:
+        event_data.update(additional_data)
+    return event_data
+
+
 setup_config()
 logger = logging.getLogger(__name__)
 
@@ -120,6 +143,7 @@ class Memory(MemoryBase):
 
         self.custom_fact_extraction_prompt = self.config.custom_fact_extraction_prompt
         self.custom_update_memory_prompt = self.config.custom_update_memory_prompt
+
         self.embedding_model = EmbedderFactory.create(
             self.config.embedder.provider,
             self.config.embedder.config,
@@ -155,6 +179,9 @@ class Memory(MemoryBase):
         self._telemetry_vector_store = VectorStoreFactory.create(
             self.config.vector_store.provider, self.config.vector_store.config
         )
+        # Save static event data cache for telemetry calls in this instance
+        self._event_telemetry_cache = None
+
         capture_event("mem0.init", self, {"sync_type": "sync"})
 
     @classmethod
@@ -750,6 +777,7 @@ class Memory(MemoryBase):
         Args:
             memory_id (str): ID of the memory to delete.
         """
+        # PERF: Only one event capture here (removes duplicate call from _delete_memory)
         capture_event("mem0.delete", self, {"memory_id": memory_id, "sync_type": "sync"})
         self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
@@ -937,7 +965,7 @@ class Memory(MemoryBase):
             role=existing_memory.payload.get("role"),
             is_deleted=1,
         )
-        capture_event("mem0._delete_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
+        # PERF: Removed extra event capture here (delete event fired at top level only)
         return memory_id
 
     def reset(self):
@@ -1844,3 +1872,6 @@ class AsyncMemory(MemoryBase):
 
     async def chat(self, query):
         raise NotImplementedError("Chat function not implemented yet.")
+
+
+_anonymous_telemetry = AnonymousTelemetry()
