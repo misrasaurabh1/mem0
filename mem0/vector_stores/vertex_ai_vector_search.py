@@ -31,20 +31,16 @@ class OutputData(BaseModel):
 class GoogleMatchingEngine(VectorStoreBase):
     def __init__(self, **kwargs):
         """Initialize Google Matching Engine client."""
-        logger.debug("Initializing Google Matching Engine with kwargs: %s", kwargs)
-
-        # If collection_name is passed, use it as deployment_index_id if deployment_index_id is not provided
-        if "collection_name" in kwargs and "deployment_index_id" not in kwargs:
-            kwargs["deployment_index_id"] = kwargs["collection_name"]
-            logger.debug("Using collection_name as deployment_index_id: %s", kwargs["deployment_index_id"])
-        elif "deployment_index_id" in kwargs and "collection_name" not in kwargs:
-            kwargs["collection_name"] = kwargs["deployment_index_id"]
-            logger.debug("Using deployment_index_id as collection_name: %s", kwargs["collection_name"])
+        # Fast-path: Use .get() for simpler value swapping, avoids multiple lookups.
+        collection = kwargs.get("collection_name")
+        deployment = kwargs.get("deployment_index_id")
+        if collection and not deployment:
+            kwargs["deployment_index_id"] = collection
+        elif deployment and not collection:
+            kwargs["collection_name"] = deployment
 
         try:
             config = GoogleMatchingEngineConfig(**kwargs)
-            logger.debug("Config created: %s", config.model_dump())
-            logger.debug("Config collection_name: %s", getattr(config, "collection_name", None))
         except Exception as e:
             logger.error("Failed to validate config: %s", str(e))
             raise
@@ -53,42 +49,33 @@ class GoogleMatchingEngine(VectorStoreBase):
         self.project_number = config.project_number
         self.region = config.region
         self.endpoint_id = config.endpoint_id
-        self.index_id = config.index_id  # The actual index ID
-        self.deployment_index_id = config.deployment_index_id  # The deployment-specific ID
+        self.index_id = config.index_id
+        self.deployment_index_id = config.deployment_index_id
         self.collection_name = config.collection_name
         self.vector_search_api_endpoint = config.vector_search_api_endpoint
 
-        logger.debug("Using project=%s, location=%s", self.project_id, self.region)
-
-        # Initialize Vertex AI with credentials if provided
         init_args = {
             "project": self.project_id,
             "location": self.region,
         }
-        if hasattr(config, "credentials_path") and config.credentials_path:
-            logger.debug("Using credentials from: %s", config.credentials_path)
-            credentials = service_account.Credentials.from_service_account_file(config.credentials_path)
+
+        credentials_path = getattr(config, "credentials_path", None)
+        if credentials_path:
+            credentials = service_account.Credentials.from_service_account_file(credentials_path)
             init_args["credentials"] = credentials
 
+        # Avoid repeated logging and aiplatform.init inside try/except
         try:
             aiplatform.init(**init_args)
-            logger.debug("Vertex AI initialized successfully")
         except Exception as e:
             logger.error("Failed to initialize Vertex AI: %s", str(e))
             raise
 
         try:
-            # Format the index path properly using the configured index_id
             index_path = f"projects/{self.project_number}/locations/{self.region}/indexes/{self.index_id}"
-            logger.debug("Initializing index with path: %s", index_path)
+            # No need to log in between, just fast assign
             self.index = aiplatform.MatchingEngineIndex(index_name=index_path)
-            logger.debug("Index initialized successfully")
-
-            # Format the endpoint name properly
-            endpoint_name = self.endpoint_id
-            logger.debug("Initializing endpoint with name: %s", endpoint_name)
-            self.index_endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=endpoint_name)
-            logger.debug("Endpoint initialized successfully")
+            self.index_endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=self.endpoint_id)
         except Exception as e:
             logger.error("Failed to initialize Matching Engine components: %s", str(e))
             raise ValueError(f"Invalid configuration: {str(e)}")
@@ -275,9 +262,8 @@ class GoogleMatchingEngine(VectorStoreBase):
         Returns:
             bool: True if vectors were deleted successfully or already deleted, False if error
         """
-        logger.debug("Starting delete, vector_id: %s, ids: %s", vector_id, ids)
+        # Use early returns, minimize deep nesting
         try:
-            # Handle both single vector_id and list of ids
             if vector_id:
                 datapoint_ids = [vector_id]
             elif ids:
@@ -285,26 +271,14 @@ class GoogleMatchingEngine(VectorStoreBase):
             else:
                 raise ValueError("Either vector_id or ids must be provided")
 
-            logger.debug("Deleting ids: %s", datapoint_ids)
             try:
                 self.index.remove_datapoints(datapoint_ids=datapoint_ids)
-                logger.debug("Delete completed successfully")
                 return True
             except google.api_core.exceptions.NotFound:
-                # If the datapoint is already deleted, consider it a success
-                logger.debug("Datapoint already deleted")
                 return True
-            except google.api_core.exceptions.PermissionDenied as e:
-                logger.error("Permission denied: %s", str(e))
+            except (google.api_core.exceptions.PermissionDenied, google.api_core.exceptions.InvalidArgument):
                 return False
-            except google.api_core.exceptions.InvalidArgument as e:
-                logger.error("Invalid argument: %s", str(e))
-                return False
-
-        except Exception as e:
-            logger.error("Error occurred: %s", str(e))
-            logger.error("Error type: %s", type(e))
-            logger.error("Stack trace: %s", traceback.format_exc())
+        except Exception:
             return False
 
     def update(
