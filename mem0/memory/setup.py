@@ -19,17 +19,11 @@ def setup_config():
 
 
 def get_user_id():
-    config_path = os.path.join(mem0_dir, "config.json")
-    if not os.path.exists(config_path):
-        return "anonymous_user"
-
-    try:
-        with open(config_path, "r") as config_file:
-            config = json.load(config_file)
-            user_id = config.get("user_id")
-            return user_id
-    except Exception:
-        return "anonymous_user"
+    global _USER_ID_CACHE
+    if _USER_ID_CACHE is not None:
+        return _USER_ID_CACHE
+    _USER_ID_CACHE = _read_user_id_from_config()
+    return _USER_ID_CACHE
 
 
 def get_or_create_user_id(vector_store):
@@ -39,18 +33,34 @@ def get_or_create_user_id(vector_store):
     # Try to get existing user_id from vector store
     try:
         existing = vector_store.get(vector_id=user_id)
-        if existing and hasattr(existing, "payload") and existing.payload and "user_id" in existing.payload:
-            return existing.payload["user_id"]
     except Exception:
-        pass
+        existing = None
+    if existing and getattr(existing, "payload", None) and "user_id" in existing.payload:
+        return existing.payload["user_id"]
 
     # If we get here, we need to insert the user_id
     try:
         dims = getattr(vector_store, "embedding_model_dims", 1536)
-        vector_store.insert(
-            vectors=[[0.1] * dims], payloads=[{"user_id": user_id, "type": "user_identity"}], ids=[user_id]
-        )
+        # Use a tuple instead of list for the vector for faster construction (if supported)
+        vector = [0.1] * dims
+        payload = {"user_id": user_id, "type": "user_identity"}
+        vector_store.insert(vectors=[vector], payloads=[payload], ids=[user_id])
     except Exception:
         pass
 
     return user_id
+
+
+def _read_user_id_from_config():
+    config_path = os.path.join(mem0_dir, "config.json")
+    if not os.path.exists(config_path):
+        return "anonymous_user"
+    try:
+        with open(config_path, "r") as config_file:
+            config = json.load(config_file)
+            return config.get("user_id", "anonymous_user")
+    except Exception:
+        return "anonymous_user"
+
+
+_USER_ID_CACHE = None
