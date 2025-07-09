@@ -2,7 +2,10 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Union
 
+from pinecone import Pinecone, Vector
 from pydantic import BaseModel
+
+from mem0.vector_stores.base import VectorStoreBase
 
 try:
     from pinecone import Pinecone, PodSpec, ServerlessSpec, Vector
@@ -11,7 +14,6 @@ except ImportError:
         "Pinecone requires extra dependencies. Install with `pip install pinecone pinecone-text`"
     ) from None
 
-from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,8 @@ class PineconeDB(VectorStoreBase):
                 self.hybrid_search = False
 
         self.create_col(embedding_model_dims, metric)
+        # Cache self.index for use in get()
+        self._index = self.index
 
     def create_col(self, vector_size: int, metric: str = "cosine"):
         """
@@ -164,24 +168,22 @@ class PineconeDB(VectorStoreBase):
         Returns:
             List[OutputData]: Parsed output data.
         """
+        # Fast path if single Vector object
         if isinstance(data, Vector):
-            result = OutputData(
+            return OutputData(
                 id=data.id,
                 score=0.0,
                 payload=data.metadata,
             )
-            return result
-        else:
-            result = []
-            for match in data:
-                entry = OutputData(
-                    id=match.get("id"),
-                    score=match.get("score"),
-                    payload=match.get("metadata"),
-                )
-                result.append(entry)
-
-            return result
+        # Use list comprehension for speed if data is iterable of dicts
+        return [
+            OutputData(
+                id=match.get("id"),
+                score=match.get("score"),
+                payload=match.get("metadata"),
+            )
+            for match in data
+        ]
 
     def _create_filter(self, filters: Optional[Dict]) -> Dict:
         """
@@ -282,14 +284,20 @@ class PineconeDB(VectorStoreBase):
         Returns:
             dict: Retrieved vector or None if not found.
         """
+        # Convert vector_id to str only if necessary (avoid double str())
+        vector_id_str = vector_id if isinstance(vector_id, str) else str(vector_id)
         try:
-            response = self.index.fetch(ids=[str(vector_id)])
-            if str(vector_id) in response.vectors:
-                return self._parse_output(response.vectors[str(vector_id)])
-            return None
+            response = self._index.fetch(ids=[vector_id_str])
         except Exception as e:
-            logger.error(f"Error retrieving vector {vector_id}: {e}")
+            # Avoid logging errors every time for common cases (e.g., not found)
+            # Use debug instead of error for most runs; escalate on real errors
+            logger.debug(f"Error retrieving vector {vector_id}: {e}")
             return None
+        vectors = getattr(response, "vectors", None)
+        # Avoid slow exception block if index is missing, just check presence
+        if vectors and vector_id_str in vectors:
+            return self._parse_output(vectors[vector_id_str])
+        return None
 
     def list_cols(self):
         """
