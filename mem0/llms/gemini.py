@@ -1,14 +1,17 @@
 import os
 from typing import Dict, List, Optional
 
+from google import genai
+from google.genai import types
+
+from mem0.configs.llms.base import BaseLlmConfig
+from mem0.llms.base import LLMBase
+
 try:
     from google import genai
     from google.genai import types
 except ImportError:
     raise ImportError("The 'google-genai' library is required. Please install it using 'pip install google-genai'.")
-
-from mem0.configs.llms.base import BaseLlmConfig
-from mem0.llms.base import LLMBase
 
 
 class GeminiLLM(LLMBase):
@@ -100,36 +103,27 @@ class GeminiLLM(LLMBase):
         Returns:
             list: The list of tools in the required format.
         """
-
-        def remove_additional_properties(data):
-            """Recursively removes 'additionalProperties' from nested dictionaries."""
-            if isinstance(data, dict):
-                filtered_dict = {
-                    key: remove_additional_properties(value)
-                    for key, value in data.items()
-                    if not (key == "additionalProperties")
-                }
-                return filtered_dict
-            else:
-                return data
-
-        if tools:
-            function_declarations = []
-            for tool in tools:
-                func = tool["function"].copy()
-                cleaned_func = remove_additional_properties(func)
-
-                function_declaration = types.FunctionDeclaration(
-                    name=cleaned_func["name"],
-                    description=cleaned_func.get("description", ""),
-                    parameters=cleaned_func.get("parameters", {}),
-                )
-                function_declarations.append(function_declaration)
-
-            tool_obj = types.Tool(function_declarations=function_declarations)
-            return [tool_obj]
-        else:
+        if not tools:
             return None
+
+        function_declarations = []
+        append_func_decl = function_declarations.append
+
+        for tool in tools:
+            func = tool["function"]
+            # Use a shallow copy, then do in-place removal
+            func_copy = dict(func)
+            cleaned_func = _remove_additional_properties(func_copy)
+
+            function_declaration = types.FunctionDeclaration(
+                name=cleaned_func["name"],
+                description=cleaned_func.get("description", ""),
+                parameters=cleaned_func.get("parameters", {}),
+            )
+            append_func_decl(function_declaration)
+
+        tool_obj = types.Tool(function_declarations=function_declarations)
+        return [tool_obj]
 
     def generate_response(
         self,
@@ -199,3 +193,39 @@ class GeminiLLM(LLMBase):
         )
 
         return self._parse_response(response, tools)
+
+
+def _remove_additional_properties(data):
+    """Iteratively removes 'additionalProperties' from nested dictionaries."""
+    if not isinstance(data, dict):
+        return data
+
+    # Use an explicit stack; stores (parent_dict, key, value) or (None, None, root_dict)
+    stack = [(None, None, data)]
+    parents = []
+
+    # We'll copy only where mutation needed (if we remove) to save on unnecessary object copies
+    visited = {}
+
+    while stack:
+        parent, key, curr = stack.pop()
+        if isinstance(curr, dict):
+            # Only copy if needed: lazily
+            is_copied = False
+            items = list(curr.items())
+            for k, v in items:
+                if k == "additionalProperties":
+                    # Remove key, copy if not previously copied
+                    if id(curr) not in visited:
+                        copy_curr = dict(curr)
+                        visited[id(curr)] = copy_curr
+                        curr = copy_curr
+                    del curr[k]
+                    is_copied = True
+                elif isinstance(v, dict):
+                    stack.append((curr, k, v))
+            # After potential change, update parent if needed
+            if parent is not None and is_copied:
+                parent[key] = curr
+        # No action for other types
+    return data
