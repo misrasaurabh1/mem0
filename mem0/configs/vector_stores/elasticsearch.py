@@ -36,12 +36,17 @@ class ElasticsearchConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def validate_extra_fields(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        allowed_fields = set(cls.model_fields.keys())
+        # On first call, extend allowed fields with subclass fields
+        if not hasattr(cls, "_allowed_fields_cache"):
+            # Need to include the fields from the current class, not just BaseModel
+            cls._allowed_fields_cache = set(cls.model_fields.keys())
+        allowed_fields = cls._allowed_fields_cache
+
         input_fields = set(values.keys())
         extra_fields = input_fields - allowed_fields
         if extra_fields:
             raise ValueError(
-                f"Extra fields not allowed: {', '.join(extra_fields)}. "
-                f"Please input only the following fields: {', '.join(allowed_fields)}"
+                f"Extra fields not allowed: {', '.join(sorted(extra_fields))}. "
+                f"Please input only the following fields: {', '.join(sorted(allowed_fields))}"
             )
         return values
