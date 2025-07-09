@@ -64,25 +64,22 @@ def get_image_description(image_obj, llm, vision_details):
     """
     Get the description of the image
     """
-
+    gen_response = llm.generate_response
     if isinstance(image_obj, str):
-        messages = [
+        messages = (
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": "A user is providing an image. Provide a high level description of the image and do not include any additional text.",
-                    },
+                    _USER_PROMPT,
                     {"type": "image_url", "image_url": {"url": image_obj, "detail": vision_details}},
                 ],
             },
-        ]
+        )
     else:
-        messages = [image_obj]
+        messages = (image_obj,)
 
-    response = llm.generate_response(messages=messages)
-    return response
+    # Fast path through local function handle and tuple for messages
+    return gen_response(messages=messages)
 
 
 def parse_vision_messages(messages, llm=None, vision_details="auto"):
@@ -131,3 +128,9 @@ def process_telemetry_filters(filters):
         encoded_ids["run_id"] = hashlib.md5(filters["run_id"].encode()).hexdigest()
 
     return list(filters.keys()), encoded_ids
+
+
+_USER_PROMPT = {
+    "type": "text",
+    "text": "A user is providing an image. Provide a high level description of the image and do not include any additional text.",
+}
