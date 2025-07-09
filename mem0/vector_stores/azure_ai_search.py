@@ -7,6 +7,9 @@ from pydantic import BaseModel
 
 from mem0.memory.utils import extract_json
 from mem0.vector_stores.base import VectorStoreBase
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
 
 try:
     from azure.core.credentials import AzureKeyCredential
@@ -262,14 +265,28 @@ class AzureAISearch(VectorStoreBase):
             payload (Dict, optional): Updated payload.
         """
         document = {"id": vector_id}
-        if vector:
+        if vector is not None:
             document["vector"] = vector
+
+        # Only serialize and set fields if payload is not None and is not empty
         if payload:
-            json_payload = json.dumps(payload)
+            # Use orjson if available for faster serialization, otherwise fallback to json
+            try:
+                import orjson
+
+                json_payload = orjson.dumps(payload).decode()
+            except ImportError:
+                json_payload = json.dumps(payload)
             document["payload"] = json_payload
-            for field in ["user_id", "run_id", "agent_id"]:
-                document[field] = payload.get(field)
-        response = self.search_client.merge_or_upload_documents(documents=[document])
+            # Use dict comprehension for faster field lookup/assignment
+            document.update({field: payload.get(field) for field in _PAYLOAD_FIELDS})
+
+        # Use local variable for efficiency and minimize attribute lookups
+        merge_func = self.search_client.merge_or_upload_documents
+        response = merge_func(documents=[document])
+
+        # Check for failed updates (preserving original behavior)
+        # Since 'status_code' is expected, use get() directly for performance
         for doc in response:
             if not hasattr(doc, "status_code") and doc.get("status_code") != 200:
                 raise Exception(f"Update failed for document {vector_id}: {doc}")
@@ -379,3 +396,6 @@ class AzureAISearch(VectorStoreBase):
         except Exception as e:
             logger.error(f"Error resetting index {self.index_name}: {e}")
             raise
+
+
+_PAYLOAD_FIELDS = ("user_id", "run_id", "agent_id")
