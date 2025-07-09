@@ -7,6 +7,7 @@ from typing import List, Optional, Union
 import httpx
 
 import mem0
+from mem0.configs.prompts import MEMORY_ANSWER_PROMPT
 
 try:
     import litellm
@@ -24,7 +25,6 @@ except ImportError:
         sys.exit(1)
 
 from mem0 import Memory, MemoryClient
-from mem0.configs.prompts import MEMORY_ANSWER_PROMPT
 from mem0.memory.telemetry import capture_client_event, capture_event
 
 logger = logging.getLogger(__name__)
@@ -150,8 +150,12 @@ class Completions:
         return response
 
     def _prepare_messages(self, messages: List[dict]) -> List[dict]:
-        if not messages or messages[0]["role"] != "system":
-            return [{"role": "system", "content": MEMORY_ANSWER_PROMPT}] + messages
+        try:
+            first = messages[0]
+        except IndexError:
+            return [{"role": "system", "content": MEMORY_ANSWER_PROMPT}]
+        if first["role"] != "system":
+            return [{"role": "system", "content": MEMORY_ANSWER_PROMPT}, *messages]
         return messages
 
     def _async_add_to_memory(self, messages, user_id, agent_id, run_id, metadata, filters):
