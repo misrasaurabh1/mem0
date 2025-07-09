@@ -1,7 +1,11 @@
 import logging
+from itertools import zip_longest
 from typing import Dict, List, Optional
 
+from langchain_community.vectorstores import VectorStore
 from pydantic import BaseModel
+
+from mem0.vector_stores.base import VectorStoreBase
 
 try:
     from langchain_community.vectorstores import VectorStore
@@ -10,7 +14,6 @@ except ImportError:
         "The 'langchain_community' library is required. Please install it using 'pip install langchain_community'."
     )
 
-from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
@@ -36,39 +39,46 @@ class Langchain(VectorStoreBase):
         Returns:
             List[OutputData]: Parsed output data.
         """
-        # Check if input is a list of Document objects
-        if isinstance(data, list) and all(hasattr(doc, "metadata") for doc in data if hasattr(doc, "__dict__")):
-            result = []
-            for doc in data:
-                entry = OutputData(
-                    id=getattr(doc, "id", None),
-                    score=None,  # Document objects typically don't include scores
-                    payload=getattr(doc, "metadata", {}),
-                )
-                result.append(entry)
-            return result
+        # Fast-path for list-of-Document objects
+        if isinstance(data, list):
+            # Avoid repeated hasattr by filtering only objects that have __dict__.
+            # This check matches the original: [hasattr(doc, "metadata") for doc in data if hasattr(doc, "__dict__")]
+            valid_docs = [doc for doc in data if hasattr(doc, "__dict__") and hasattr(doc, "metadata")]
+            if len(valid_docs) == len(data):  # All docs are valid
+                # Use list comprehension to avoid loop, faster attribute access
+                return [
+                    OutputData(
+                        id=getattr(doc, "id", None),
+                        score=None,  # Document objects typically don't include scores
+                        payload=getattr(doc, "metadata", {}),
+                    )
+                    for doc in data
+                ]
 
-        # Original format handling
-        keys = ["ids", "distances", "metadatas"]
-        values = []
+        # Original format handling (dict with 'ids', 'distances', 'metadatas')
+        # Extract lists with fallback to []
+        ids = data.get("ids", [])
+        distances = data.get("distances", [])
+        metadatas = data.get("metadatas", [])
 
-        for key in keys:
-            value = data.get(key, [])
-            if isinstance(value, list) and value and isinstance(value[0], list):
-                value = value[0]
-            values.append(value)
+        # Unpack first element if nested in a single list, as in the original
+        if isinstance(ids, list) and ids and isinstance(ids[0], list):
+            ids = ids[0]
+        if isinstance(distances, list) and distances and isinstance(distances[0], list):
+            distances = distances[0]
+        if isinstance(metadatas, list) and metadatas and isinstance(metadatas[0], list):
+            metadatas = metadatas[0]
 
-        ids, distances, metadatas = values
-        max_length = max(len(v) for v in values if isinstance(v, list) and v is not None)
-
-        result = []
-        for i in range(max_length):
-            entry = OutputData(
-                id=ids[i] if isinstance(ids, list) and ids and i < len(ids) else None,
-                score=(distances[i] if isinstance(distances, list) and distances and i < len(distances) else None),
-                payload=(metadatas[i] if isinstance(metadatas, list) and metadatas and i < len(metadatas) else None),
+        # Use zip_longest to avoid repeated len/type/bounds checking -- much faster for large lists!
+        # Fills missing values with None (to match original per-entry checks).
+        result = [
+            OutputData(
+                id=_id,
+                score=_dist,
+                payload=_meta,
             )
-            result.append(entry)
+            for _id, _dist, _meta in zip_longest(ids, distances, metadatas)
+        ]
 
         return result
 
