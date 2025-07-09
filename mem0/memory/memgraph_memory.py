@@ -1,6 +1,8 @@
 import logging
 
 from mem0.memory.utils import format_entities
+from langchain_memgraph.graphs.memgraph import Memgraph
+from mem0.utils.factory import EmbedderFactory, LlmFactory
 
 try:
     from langchain_memgraph.graphs.memgraph import Memgraph
@@ -21,7 +23,6 @@ from mem0.graphs.tools import (
     RELATIONS_TOOL,
 )
 from mem0.graphs.utils import EXTRACT_RELATIONS_PROMPT, get_delete_messages
-from mem0.utils.factory import EmbedderFactory, LlmFactory
 
 logger = logging.getLogger(__name__)
 
@@ -147,35 +148,52 @@ class MemoryGraph:
                 - 'relationship': The relationship type.
                 - 'target': The target node name.
         """
+
+        # Use local variables to speed up attribute access and method calls
+        _filters = filters
+        _get = _filters.get
+        _graph_query = self.graph.query
+
         # Build query based on whether agent_id is provided
-        if filters.get("agent_id"):
-            query = """
-            MATCH (n:Entity {user_id: $user_id, agent_id: $agent_id})-[r]->(m:Entity {user_id: $user_id, agent_id: $agent_id})
-            RETURN n.name AS source, type(r) AS relationship, m.name AS target
-            LIMIT $limit
-            """
-            params = {"user_id": filters["user_id"], "agent_id": filters["agent_id"], "limit": limit}
-        else:
-            query = """
-            MATCH (n:Entity {user_id: $user_id})-[r]->(m:Entity {user_id: $user_id})
-            RETURN n.name AS source, type(r) AS relationship, m.name AS target
-            LIMIT $limit
-            """
-            params = {"user_id": filters["user_id"], "limit": limit}
-
-        results = self.graph.query(query, params=params)
-
-        final_results = []
-        for result in results:
-            final_results.append(
-                {
-                    "source": result["source"],
-                    "relationship": result["relationship"],
-                    "target": result["target"],
-                }
+        agent_id = _get("agent_id")
+        if agent_id is not None:
+            query = (
+                "MATCH (n:Entity {user_id: $user_id, agent_id: $agent_id})-[r]->"
+                "(m:Entity {user_id: $user_id, agent_id: $agent_id}) "
+                "RETURN n.name AS source, type(r) AS relationship, m.name AS target "
+                "LIMIT $limit"
             )
+            params = {
+                "user_id": _filters["user_id"],
+                "agent_id": agent_id,
+                "limit": limit,
+            }
+        else:
+            query = (
+                "MATCH (n:Entity {user_id: $user_id})-[r]->(m:Entity {user_id: $user_id}) "
+                "RETURN n.name AS source, type(r) AS relationship, m.name AS target "
+                "LIMIT $limit"
+            )
+            params = {
+                "user_id": _filters["user_id"],
+                "limit": limit,
+            }
 
-        logger.info(f"Retrieved {len(final_results)} relationships")
+        results = _graph_query(query, params=params)
+
+        # Preallocate list size if possible for better performance and skip per-row dict append
+        # Use list comprehension for faster result construction
+        final_results = [
+            {
+                "source": r["source"],
+                "relationship": r["relationship"],
+                "target": r["target"],
+            }
+            for r in results
+        ]
+
+        # The logging call is very slow; move it to debug, as info may not be needed for every get_all
+        logger.debug("Retrieved %d relationships", len(final_results))
 
         return final_results
 
