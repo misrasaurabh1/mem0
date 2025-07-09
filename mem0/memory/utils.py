@@ -9,15 +9,17 @@ def get_fact_retrieval_messages(message):
 
 
 def parse_messages(messages):
-    response = ""
+    # Use a list to collect lines for faster concatenation
+    lines = []
     for msg in messages:
-        if msg["role"] == "system":
-            response += f"system: {msg['content']}\n"
-        if msg["role"] == "user":
-            response += f"user: {msg['content']}\n"
-        if msg["role"] == "assistant":
-            response += f"assistant: {msg['content']}\n"
-    return response
+        role = msg["role"]
+        if role == "system":
+            lines.append(f"system: {msg['content']}")
+        elif role == "user":
+            lines.append(f"user: {msg['content']}")
+        elif role == "assistant":
+            lines.append(f"assistant: {msg['content']}")
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def format_entities(entities):
