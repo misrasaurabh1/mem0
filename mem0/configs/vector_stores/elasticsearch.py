@@ -24,11 +24,14 @@ class ElasticsearchConfig(BaseModel):
     @classmethod
     def validate_auth(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         # Check if either cloud_id or host/port is provided
-        if not values.get("cloud_id") and not values.get("host"):
+        if not (values.get("cloud_id") or "host" in values):
             raise ValueError("Either cloud_id or host must be provided")
 
         # Check if authentication is provided
-        if not any([values.get("api_key"), (values.get("user") and values.get("password"))]):
+        api_key = values.get("api_key")
+        user = values.get("user")
+        password = values.get("password")
+        if not (api_key or (user and password)):
             raise ValueError("Either api_key or user/password must be provided")
 
         return values
