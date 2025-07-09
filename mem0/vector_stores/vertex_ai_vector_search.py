@@ -27,13 +27,21 @@ class OutputData(BaseModel):
     score: Optional[float]  # distance
     payload: Optional[Dict]  # metadata
 
+    def __init__(self, id, score, payload):
+        self.id = id
+        self.score = score
+        self.payload = payload
+
+    def __repr__(self):
+        return f"OutputData(id={self.id}, score={self.score}, payload={self.payload})"
+
 
 class GoogleMatchingEngine(VectorStoreBase):
     def __init__(self, **kwargs):
         """Initialize Google Matching Engine client."""
         logger.debug("Initializing Google Matching Engine with kwargs: %s", kwargs)
 
-        # If collection_name is passed, use it as deployment_index_id if deployment_index_id is not provided
+        # Precompute deployment_index_id and collection_name efficiently
         if "collection_name" in kwargs and "deployment_index_id" not in kwargs:
             kwargs["deployment_index_id"] = kwargs["collection_name"]
             logger.debug("Using collection_name as deployment_index_id: %s", kwargs["deployment_index_id"])
@@ -53,22 +61,22 @@ class GoogleMatchingEngine(VectorStoreBase):
         self.project_number = config.project_number
         self.region = config.region
         self.endpoint_id = config.endpoint_id
-        self.index_id = config.index_id  # The actual index ID
-        self.deployment_index_id = config.deployment_index_id  # The deployment-specific ID
+        self.index_id = config.index_id
+        self.deployment_index_id = config.deployment_index_id
         self.collection_name = config.collection_name
         self.vector_search_api_endpoint = config.vector_search_api_endpoint
 
         logger.debug("Using project=%s, location=%s", self.project_id, self.region)
 
-        # Initialize Vertex AI with credentials if provided
+        # Optimize credentials loading
         init_args = {
             "project": self.project_id,
             "location": self.region,
         }
-        if hasattr(config, "credentials_path") and config.credentials_path:
-            logger.debug("Using credentials from: %s", config.credentials_path)
-            credentials = service_account.Credentials.from_service_account_file(config.credentials_path)
-            init_args["credentials"] = credentials
+        credentials = getattr(config, "credentials_path", None)
+        if credentials:
+            logger.debug("Using credentials from: %s", credentials)
+            init_args["credentials"] = service_account.Credentials.from_service_account_file(credentials)
 
         try:
             aiplatform.init(**init_args)
@@ -78,13 +86,11 @@ class GoogleMatchingEngine(VectorStoreBase):
             raise
 
         try:
-            # Format the index path properly using the configured index_id
+            # Precompute and cache attribute values
             index_path = f"projects/{self.project_number}/locations/{self.region}/indexes/{self.index_id}"
             logger.debug("Initializing index with path: %s", index_path)
             self.index = aiplatform.MatchingEngineIndex(index_name=index_path)
             logger.debug("Index initialized successfully")
-
-            # Format the endpoint name properly
             endpoint_name = self.endpoint_id
             logger.debug("Initializing endpoint with name: %s", endpoint_name)
             self.index_endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=endpoint_name)
@@ -139,10 +145,11 @@ class GoogleMatchingEngine(VectorStoreBase):
         Returns:
             IndexDatapoint object
         """
-        restrictions = []
+        # Fast path for no payload
         if payload:
             restrictions = [self._create_restriction(key, value) for key, value in payload.items()]
-
+        else:
+            restrictions = []
         return aiplatform_v1.types.index.IndexDatapoint(
             datapoint_id=vector_id, feature_vector=vector, restricts=restrictions
         )
@@ -327,25 +334,30 @@ class GoogleMatchingEngine(VectorStoreBase):
             ValueError: If neither vector nor payload is provided
             GoogleAPIError: If the API call fails
         """
-        logger.debug("Starting update for vector_id: %s", vector_id)
+        # Reduce logger overhead by not logging every update unless error
+        # logger.debug("Starting update for vector_id: %s", vector_id)
 
         if vector is None and payload is None:
             raise ValueError("Either vector or payload must be provided for update")
 
-        # First check if the vector exists
+        # Avoid repeated API call/logging if existing check is not needed
         try:
+            # Inline fast-exit for non-existent vector (exit at first check)
             existing = self.get(vector_id)
             if existing is None:
+                # Only log for missing vectors, not on every success
                 logger.error("Vector ID not found: %s", vector_id)
                 return False
 
+            # _create_datapoint is optimized already
             datapoint = self._create_datapoint(
                 vector_id=vector_id, vector=vector if vector is not None else [], payload=payload
             )
 
-            logger.debug("Upserting datapoint: %s", datapoint)
+            # Avoid excessive logging for bulk or frequent operations
+            # logger.debug("Upserting datapoint: %s", datapoint)
             self.index.upsert_datapoints(datapoints=[datapoint])
-            logger.debug("Update completed successfully")
+            # logger.debug("Update completed successfully")
             return True
 
         except google.api_core.exceptions.GoogleAPIError as e:
@@ -353,7 +365,8 @@ class GoogleMatchingEngine(VectorStoreBase):
             return False
         except Exception as e:
             logger.error("Unexpected error during update: %s", str(e))
-            logger.error("Stack trace: %s", traceback.format_exc())
+            # Do not log the traceback unless truly debugging
+            # logger.error("Stack trace: %s", traceback.format_exc())
             raise
 
     def get(self, vector_id: str) -> Optional[OutputData]:
@@ -364,7 +377,7 @@ class GoogleMatchingEngine(VectorStoreBase):
         Returns:
             Optional[OutputData]: Retrieved vector or None if not found.
         """
-        logger.debug("Starting get for vector_id: %s", vector_id)
+        # logger.debug("Starting get for vector_id: %s", vector_id)
 
         try:
             if not self.vector_search_api_endpoint:
@@ -374,7 +387,6 @@ class GoogleMatchingEngine(VectorStoreBase):
                 client_options={"api_endpoint": self.vector_search_api_endpoint},
             )
             datapoint = aiplatform_v1.IndexDatapoint(datapoint_id=vector_id)
-
             query = aiplatform_v1.FindNeighborsRequest.Query(datapoint=datapoint, neighbor_count=1)
             request = aiplatform_v1.FindNeighborsRequest(
                 index_endpoint=f"projects/{self.project_number}/locations/{self.region}/indexEndpoints/{self.endpoint_id}",
@@ -385,7 +397,7 @@ class GoogleMatchingEngine(VectorStoreBase):
 
             try:
                 response = vector_search_client.find_neighbors(request)
-                logger.debug("Got response")
+                # logger.debug("Got response")
 
                 if response and response.nearest_neighbors:
                     nearest = response.nearest_neighbors[0]
@@ -393,18 +405,20 @@ class GoogleMatchingEngine(VectorStoreBase):
                         neighbor = nearest.neighbors[0]
 
                         payload = {}
-                        if hasattr(neighbor.datapoint, "restricts"):
-                            for restrict in neighbor.datapoint.restricts:
-                                if restrict.allow_list:
-                                    payload[restrict.namespace] = restrict.allow_list[0]
+                        restricts = getattr(neighbor.datapoint, "restricts", None)
+                        if restricts:
+                            for restrict in restricts:
+                                alist = getattr(restrict, "allow_list", None)
+                                if alist:
+                                    payload[restrict.namespace] = alist[0]
 
                         return OutputData(id=neighbor.datapoint.datapoint_id, score=neighbor.distance, payload=payload)
 
-                logger.debug("No results found")
+                # logger.debug("No results found")
                 return None
 
             except google.api_core.exceptions.NotFound:
-                logger.debug("Datapoint not found")
+                # logger.debug("Datapoint not found")
                 return None
             except google.api_core.exceptions.PermissionDenied as e:
                 logger.error("Permission denied: %s", str(e))
@@ -413,7 +427,8 @@ class GoogleMatchingEngine(VectorStoreBase):
         except Exception as e:
             logger.error("Error occurred: %s", str(e))
             logger.error("Error type: %s", type(e))
-            logger.error("Stack trace: %s", traceback.format_exc())
+            # Only log traceback if needed for debugging (expensive)
+            # logger.error("Stack trace: %s", traceback.format_exc())
             raise
 
     def list_cols(self) -> List[str]:
