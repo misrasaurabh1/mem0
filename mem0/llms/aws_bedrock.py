@@ -15,8 +15,8 @@ PROVIDERS = ["ai21", "amazon", "anthropic", "cohere", "meta", "mistral", "stabil
 
 
 def extract_provider(model: str) -> str:
-    for provider in PROVIDERS:
-        if re.search(rf"\b{re.escape(provider)}\b", model):
+    for provider, pattern in _provider_regexps:
+        if pattern.search(model):
             return provider
     raise ValueError(f"Unknown provider in model: {model}")
 
@@ -268,3 +268,6 @@ class AWSBedrockLLM(LLMBase):
                 )
 
         return self._parse_response(response, tools)
+
+
+_provider_regexps = [(provider, re.compile(rf"\b{re.escape(provider)}\b")) for provider in PROVIDERS]
