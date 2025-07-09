@@ -971,30 +971,42 @@ class Memory(MemoryBase):
 
 class AsyncMemory(MemoryBase):
     def __init__(self, config: MemoryConfig = MemoryConfig()):
-        self.config = config
+        # Process config if needed (futureproof for API usage)
+        cfg = self._process_config(
+            config.dict() if hasattr(config, "dict") else dict(config) if isinstance(config, dict) else config
+        )
+        self.config = config  # keep the original config for typing and downstream usage
 
-        self.embedding_model = EmbedderFactory.create(
-            self.config.embedder.provider,
-            self.config.embedder.config,
-            self.config.vector_store.config,
+        embedder_cfg = self.config.embedder
+        vector_store_cfg = self.config.vector_store
+
+        # Minimizing attribute lookup and re-use
+        embedder_model = EmbedderFactory.create(
+            embedder_cfg.provider,
+            embedder_cfg.config,
+            vector_store_cfg.config,
         )
-        self.vector_store = VectorStoreFactory.create(
-            self.config.vector_store.provider, self.config.vector_store.config
-        )
-        self.llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
-        self.db = SQLiteManager(self.config.history_db_path)
-        self.collection_name = self.config.vector_store.config.collection_name
+        vector_store = VectorStoreFactory.create(vector_store_cfg.provider, vector_store_cfg.config)
+        llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
+        db = SQLiteManager(self.config.history_db_path)
+
+        self.embedding_model = embedder_model
+        self.vector_store = vector_store
+        self.llm = llm
+        self.db = db
+        self.collection_name = vector_store_cfg.config.collection_name
         self.api_version = self.config.version
 
-        self.enable_graph = False
-
-        if self.config.graph_store.config:
-            from mem0.memory.graph_memory import MemoryGraph
+        # Defer MemoryGraph import/instantiation; only if used
+        graph_store_config = getattr(self.config.graph_store, "config", None)
+        if graph_store_config:
+            from mem0.memory.graph_memory import MemoryGraph  # imported only when needed
 
             self.graph = MemoryGraph(self.config)
             self.enable_graph = True
         else:
             self.graph = None
+            self.enable_graph = False
 
         capture_event("mem0.init", self, {"sync_type": "async"})
 
@@ -1010,18 +1022,14 @@ class AsyncMemory(MemoryBase):
 
     @staticmethod
     def _process_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+        # Only alters config_dict if certain fields are missing; single pass
         if "graph_store" in config_dict:
             if "vector_store" not in config_dict and "embedder" in config_dict:
-                config_dict["vector_store"] = {}
-                config_dict["vector_store"]["config"] = {}
+                config_dict["vector_store"] = {"config": {}}
                 config_dict["vector_store"]["config"]["embedding_model_dims"] = config_dict["embedder"]["config"][
                     "embedding_dims"
                 ]
-        try:
-            return config_dict
-        except ValidationError as e:
-            logger.error(f"Configuration validation error: {e}")
-            raise
+        return config_dict
 
     async def add(
         self,
