@@ -35,13 +35,17 @@ class LlmFactory:
 
     @classmethod
     def create(cls, provider_name, config):
-        class_type = cls.provider_to_class.get(provider_name)
-        if class_type:
-            llm_instance = load_class(class_type)
-            base_config = BaseLlmConfig(**config)
-            return llm_instance(base_config)
+        # Use cache for speed: only perform importlib on cache miss
+        if provider_name not in _LOADED_LLM_CLASSES:
+            class_type = cls.provider_to_class.get(provider_name)
+            if not class_type:
+                raise ValueError(f"Unsupported Llm provider: {provider_name}")
+            llm_class = load_class(class_type)
+            _LOADED_LLM_CLASSES[provider_name] = llm_class
         else:
-            raise ValueError(f"Unsupported Llm provider: {provider_name}")
+            llm_class = _LOADED_LLM_CLASSES[provider_name]
+        base_config = BaseLlmConfig(**config)
+        return llm_class(base_config)
 
 
 class EmbedderFactory:
@@ -106,3 +110,6 @@ class VectorStoreFactory:
     def reset(cls, instance):
         instance.reset()
         return instance
+
+
+_LOADED_LLM_CLASSES = {}
