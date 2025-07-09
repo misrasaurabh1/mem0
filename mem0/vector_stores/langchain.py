@@ -1,7 +1,11 @@
 import logging
+from itertools import zip_longest
 from typing import Dict, List, Optional
 
+from langchain_community.vectorstores import VectorStore
 from pydantic import BaseModel
+
+from mem0.vector_stores.base import VectorStoreBase
 
 try:
     from langchain_community.vectorstores import VectorStore
@@ -10,7 +14,6 @@ except ImportError:
         "The 'langchain_community' library is required. Please install it using 'pip install langchain_community'."
     )
 
-from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
@@ -36,40 +39,51 @@ class Langchain(VectorStoreBase):
         Returns:
             List[OutputData]: Parsed output data.
         """
-        # Check if input is a list of Document objects
-        if isinstance(data, list) and all(hasattr(doc, "metadata") for doc in data if hasattr(doc, "__dict__")):
-            result = []
-            for doc in data:
-                entry = OutputData(
-                    id=getattr(doc, "id", None),
-                    score=None,  # Document objects typically don't include scores
-                    payload=getattr(doc, "metadata", {}),
-                )
-                result.append(entry)
-            return result
+        # Fast path: list of Document-like objects
+        if isinstance(data, list):
+            docs = data
+            # Avoid repeated checks in the loop below
+            # If all elements look like Document objects (have __dict__ and metadata)
+            is_doc_obj = all(hasattr(doc, "__dict__") and hasattr(doc, "metadata") for doc in docs)
+            if is_doc_obj:
+                # Use list comprehension for speed
+                return [
+                    OutputData(
+                        id=getattr(doc, "id", None),
+                        score=None,
+                        payload=getattr(doc, "metadata", {}),
+                    )
+                    for doc in docs
+                ]
 
-        # Original format handling
-        keys = ["ids", "distances", "metadatas"]
-        values = []
+        # Original format handling (assume dict with keys)
+        keys = ("ids", "distances", "metadatas")
+        # Use tuple unpacking for speed and clarity
+        # Also, avoid multi-level lists if possible
+        ids, distances, metadatas = (data.get(k, []) for k in keys)
+        # Unwrap first element if it's a list-of-list (old Chroma output)
+        ids = ids[0] if isinstance(ids, list) and ids and isinstance(ids[0], list) else ids
+        distances = (
+            distances[0] if isinstance(distances, list) and distances and isinstance(distances[0], list) else distances
+        )
+        metadatas = (
+            metadatas[0] if isinstance(metadatas, list) and metadatas and isinstance(metadatas[0], list) else metadatas
+        )
 
-        for key in keys:
-            value = data.get(key, [])
-            if isinstance(value, list) and value and isinstance(value[0], list):
-                value = value[0]
-            values.append(value)
-
-        ids, distances, metadatas = values
-        max_length = max(len(v) for v in values if isinstance(v, list) and v is not None)
-
-        result = []
-        for i in range(max_length):
-            entry = OutputData(
-                id=ids[i] if isinstance(ids, list) and ids and i < len(ids) else None,
-                score=(distances[i] if isinstance(distances, list) and distances and i < len(distances) else None),
-                payload=(metadatas[i] if isinstance(metadatas, list) and metadatas and i < len(metadatas) else None),
+        # Parallel iteration, fillvalues set to None to keep semantics and avoid index errors
+        result = [
+            OutputData(
+                id=idx,
+                score=dist,
+                payload=meta,
             )
-            result.append(entry)
-
+            for idx, dist, meta in zip_longest(
+                ids if isinstance(ids, list) else [],
+                distances if isinstance(distances, list) else [],
+                metadatas if isinstance(metadatas, list) else [],
+                fillvalue=None,
+            )
+        ]
         return result
 
     def create_col(self, name, vector_size=None, distance=None):
@@ -157,13 +171,13 @@ class Langchain(VectorStoreBase):
         List all vectors in a collection.
         """
         try:
-            if hasattr(self.client, "_collection") and hasattr(self.client._collection, "get"):
+            col = getattr(self.client, "_collection", None)
+            get_fn = getattr(col, "get", None)
+            if get_fn is not None:
                 # Convert mem0 filters to Chroma where clause if needed
-                where_clause = None
-                if filters and "user_id" in filters:
-                    where_clause = {"user_id": filters["user_id"]}
+                where_clause = {"user_id": filters["user_id"]} if filters and "user_id" in filters else None
 
-                result = self.client._collection.get(where=where_clause, limit=limit)
+                result = get_fn(where=where_clause, limit=limit)
 
                 # Convert the result to the expected format
                 if result and isinstance(result, dict):
