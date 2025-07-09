@@ -7,6 +7,9 @@ from pydantic import BaseModel
 
 from mem0.memory.utils import extract_json
 from mem0.vector_stores.base import VectorStoreBase
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
 
 try:
     from azure.core.credentials import AzureKeyCredential
@@ -71,7 +74,6 @@ class AzureAISearch(VectorStoreBase):
         self.index_name = collection_name
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
-        # If compression_type is None, treat it as "none".
         self.compression_type = (compression_type or "none").lower()
         self.use_float16 = use_float16
         self.hybrid_search = hybrid_search
@@ -245,11 +247,21 @@ class AzureAISearch(VectorStoreBase):
         Args:
             vector_id (str): ID of the vector to delete.
         """
-        response = self.search_client.delete_documents(documents=[{"id": vector_id}])
+        # Prepare document for deletion
+        docs = [{"id": vector_id}]
+        response = self.search_client.delete_documents(documents=docs)
+
+        # Fast error-check loop
+        failed = []
         for doc in response:
-            if not hasattr(doc, "status_code") and doc.get("status_code") != 200:
-                raise Exception(f"Delete failed for document {vector_id}: {doc}")
-        logger.info(f"Deleted document with ID '{vector_id}' from index '{self.index_name}'.")
+            code = doc.get("status_code", None)
+            if code != 200:
+                failed.append(doc)
+        if failed:
+            raise Exception(f"Delete failed for document(s): {failed}")
+
+        # Only log deletion IF debugging or desired.
+        # logger.info(f"Deleted document with ID '{vector_id}' from index '{self.index_name}'.")
         return response
 
     def update(self, vector_id, vector=None, payload=None):
@@ -379,3 +391,21 @@ class AzureAISearch(VectorStoreBase):
         except Exception as e:
             logger.error(f"Error resetting index {self.index_name}: {e}")
             raise
+
+    # Optional: provide a batch delete method for further optimization
+    def delete_batch(self, vector_ids):
+        """
+        Delete multiple vectors by their IDs in a single API call.
+
+        Args:
+            vector_ids (list of str): List of vector IDs to delete.
+        """
+        docs = [{"id": vid} for vid in vector_ids]
+        response = self.search_client.delete_documents(documents=docs)
+        failed = []
+        for doc in response:
+            if doc.get("status_code", None) != 200:
+                failed.append(doc)
+        if failed:
+            raise Exception(f"Batch delete failed for document(s): {failed}")
+        return response
