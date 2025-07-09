@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 UPDATE_GRAPH_PROMPT = """
 You are an AI expert specializing in graph memory management and optimization. Your task is to analyze existing graph memories alongside new information, and update the relationships in the memory list to ensure the most accurate, current, and coherent representation of knowledge.
 
@@ -92,6 +94,13 @@ Provide a list of deletion instructions, each specifying the relationship to be 
 
 
 def get_delete_messages(existing_memories_string, data, user_id):
-    return DELETE_RELATIONS_SYSTEM_PROMPT.replace(
-        "USER_ID", user_id
-    ), f"Here are the existing memories: {existing_memories_string} \n\n New Information: {data}"
+    # Use cached prompt for the user_id
+    return _get_prompt_for_user(user_id), (
+        f"Here are the existing memories: {existing_memories_string} \n\n New Information: {data}"
+    )
+
+
+# Cache the replaced prompt per user_id to avoid repeated .replace() operations
+@lru_cache(maxsize=32)
+def _get_prompt_for_user(user_id):
+    return DELETE_RELATIONS_SYSTEM_PROMPT.replace("USER_ID", user_id)
