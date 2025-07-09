@@ -8,6 +8,8 @@ from typing import Dict, List, Optional
 import numpy as np
 from pydantic import BaseModel
 
+from mem0.vector_stores.base import VectorStoreBase
+
 try:
     logging.getLogger("faiss").setLevel(logging.WARNING)
     logging.getLogger("faiss.loader").setLevel(logging.WARNING)
@@ -20,7 +22,6 @@ except ImportError:
         "or `pip install faiss-cpu` (depending on Python version)."
     )
 
-from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,13 @@ class FAISS(VectorStoreBase):
                 Defaults to False.
         """
         self.collection_name = collection_name
-        self.path = path or f"/tmp/faiss/{collection_name}"
+        # Avoid repeated os.path.join/f string calls by gathering dir and basename just once
+        if path is None:
+            data_dir = "/tmp/faiss"
+            self.path = os.path.join(data_dir, collection_name)
+        else:
+            self.path = path
+            data_dir = os.path.dirname(self.path)
         self.distance_strategy = distance_strategy
         self.normalize_L2 = normalize_L2
         self.embedding_model_dims = embedding_model_dims
@@ -62,17 +69,19 @@ class FAISS(VectorStoreBase):
         self.docstore = {}
         self.index_to_id = {}
 
-        # Create directory if it doesn't exist
-        if self.path:
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        # Avoid redundant os.makedirs if not needed
+        if data_dir and not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
 
-            # Try to load existing index if available
-            index_path = f"{self.path}/{collection_name}.faiss"
-            docstore_path = f"{self.path}/{collection_name}.pkl"
-            if os.path.exists(index_path) and os.path.exists(docstore_path):
-                self._load(index_path, docstore_path)
-            else:
-                self.create_col(collection_name)
+        # Build file paths only once
+        index_path = f"{self.path}/{collection_name}.faiss"
+        docstore_path = f"{self.path}/{collection_name}.pkl"
+
+        # Directly try load or create (fewer string operations)
+        if os.path.exists(index_path) and os.path.exists(docstore_path):
+            self._load(index_path, docstore_path)
+        else:
+            self.create_col(collection_name)
 
     def _load(self, index_path: str, docstore_path: str):
         """
@@ -271,17 +280,22 @@ class FAISS(VectorStoreBase):
         Returns:
             bool: True if payload passes filters, False otherwise.
         """
+        # Fast path: no filters or empty payload
         if not filters or not payload:
             return True
 
-        for key, value in filters.items():
-            if key not in payload:
+        # Use local vars, skip indirection, avoid function call overhead for small dicts
+        for k, f_val in filters.items():
+            try:
+                p_val = payload[k]
+            except KeyError:
                 return False
 
-            if isinstance(value, list):
-                if payload[key] not in value:
+            # Direct in-list check (fastest on short lists, no function call indirection)
+            if isinstance(f_val, list):
+                if p_val not in f_val:
                     return False
-            elif payload[key] != value:
+            elif p_val != f_val:
                 return False
 
         return True
