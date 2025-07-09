@@ -16,6 +16,7 @@ from mem0.configs.vector_stores.vertex_ai_vector_search import (
     GoogleMatchingEngineConfig,
 )
 from mem0.vector_stores.base import VectorStoreBase
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -92,6 +93,12 @@ class GoogleMatchingEngine(VectorStoreBase):
         except Exception as e:
             logger.error("Failed to initialize Matching Engine components: %s", str(e))
             raise ValueError(f"Invalid configuration: {str(e)}")
+
+        # Cache the Restriction constructor for fast local access
+        self._restriction_ctor = aiplatform_v1.types.index.IndexDatapoint.Restriction
+
+        # Per-instance LRU cache for _create_restriction, since LRU cache on self only
+        self._create_restriction = self._make_restriction_cache()
 
     def _parse_output(self, data: Dict) -> List[OutputData]:
         """
@@ -627,3 +634,14 @@ class GoogleMatchingEngine(VectorStoreBase):
         """
         logger.warning("Reset operation is not supported for Google Matching Engine")
         pass
+
+    def _make_restriction_cache(self):
+        ctor = self._restriction_ctor
+
+        # Small cache since typically few unique restrictions are needed at once
+        @lru_cache(maxsize=32)
+        def _inner(key: str, value: Any):
+            str_value = value if isinstance(value, str) else ("" if value is None else str(value))
+            return ctor(namespace=key, allow_list=[str_value])
+
+        return _inner
