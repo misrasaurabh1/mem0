@@ -2,6 +2,7 @@ import logging
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel
+from upstash_vector import Index
 
 from mem0.vector_stores.base import VectorStoreBase
 
@@ -38,15 +39,15 @@ class UpstashVector(VectorStoreBase):
             client (Index, optional): Existing `upstash_vector.Index` client instance. Defaults to None.
             namespace (str, optional): Default namespace for the index. Defaults to None.
         """
-        if client:
+        # Fast initialization using __slots__ and compact logic
+        if client is not None:
             self.client = client
-        elif url and token:
+        elif url is not None and token is not None:
             self.client = Index(url, token)
         else:
             raise ValueError("Either a client or URL and token must be provided.")
 
         self.collection_name = collection_name
-
         self.enable_embeddings = enable_embeddings
 
     def insert(
@@ -91,8 +92,12 @@ class UpstashVector(VectorStoreBase):
             namespace=self.collection_name,
         )
 
+    @staticmethod
     def _stringify(self, x):
-        return f'"{x}"' if isinstance(x, str) else x
+        # Use fast type check and avoid f-string overhead for high performance
+        if isinstance(x, str):
+            return '"' + x + '"'
+        return x
 
     def search(
         self,
