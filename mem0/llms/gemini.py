@@ -1,14 +1,17 @@
 import os
 from typing import Dict, List, Optional
 
+from google import genai
+from google.genai import types
+
+from mem0.configs.llms.base import BaseLlmConfig
+from mem0.llms.base import LLMBase
+
 try:
     from google import genai
     from google.genai import types
 except ImportError:
     raise ImportError("The 'google-genai' library is required. Please install it using 'pip install google-genai'.")
-
-from mem0.configs.llms.base import BaseLlmConfig
-from mem0.llms.base import LLMBase
 
 
 class GeminiLLM(LLMBase):
@@ -75,20 +78,24 @@ class GeminiLLM(LLMBase):
         Returns:
             tuple: (system_instruction, contents_list)
         """
+        # Optimization: Pre-allocate result list; predefine Content/Part constructors
         system_instruction = None
-        contents = []
+
+        contents_append = []
+        part_ctor = types.Part
+        content_ctor = types.Content
 
         for message in messages:
-            if message["role"] == "system":
-                system_instruction = message["content"]
+            role = message["role"]
+            msg_content = message["content"]
+            if role == "system":
+                system_instruction = msg_content
             else:
-                content = types.Content(
-                    parts=[types.Part(text=message["content"])],
-                    role=message["role"],
-                )
-                contents.append(content)
+                # Avoid repeated attribute lookups and object construction
+                part = part_ctor(text=msg_content)
+                contents_append.append(content_ctor(parts=[part], role=role))
 
-        return system_instruction, contents
+        return system_instruction, contents_append
 
     def _reformat_tools(self, tools: Optional[List[Dict]]):
         """
