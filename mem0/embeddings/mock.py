@@ -8,4 +8,7 @@ class MockEmbeddings(EmbeddingBase):
         """
         Generate a mock embedding with dimension of 10.
         """
-        return [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        return _MOCK_EMBEDDING  # Use precomputed embedding for faster return
+
+
+_MOCK_EMBEDDING = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
