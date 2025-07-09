@@ -2,7 +2,6 @@ import hashlib
 import logging
 import os
 import warnings
-from functools import wraps
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -12,6 +11,11 @@ from mem0.memory.setup import get_user_id, setup_config
 from mem0.memory.telemetry import capture_client_event
 from mem0.client.project import Project, AsyncProject
 from mem0.client.utils import api_error_handler
+
+warnings.filterwarnings("default", category=DeprecationWarning)
+
+# Setup user config
+setup_config()
 
 logger = logging.getLogger(__name__)
 
@@ -107,15 +111,18 @@ class MemoryClient:
     def _validate_api_key(self):
         """Validate the API key by making a test request."""
         try:
-            params = self._prepare_params()
+            params = self._prepare_params_fast()
             response = self.client.get("/v1/ping/", params=params)
+            # Avoid multiple attribute lookups
             data = response.json()
 
             response.raise_for_status()
 
-            if data.get("org_id") and data.get("project_id"):
-                self.org_id = data.get("org_id")
-                self.project_id = data.get("project_id")
+            org_id = data.get("org_id")
+            project_id = data.get("project_id")
+            if org_id and project_id:
+                self.org_id = org_id
+                self.project_id = project_id
 
             return data.get("user_email")
 
@@ -562,7 +569,9 @@ class MemoryClient:
             APIError: If the API request fails.
             ValueError: If org_id or project_id are not set.
         """
-        logger.warning("get_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.get() method instead.")
+        logger.warning(
+            "get_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.get() method instead."
+        )
         if not (self.org_id and self.project_id):
             raise ValueError("org_id and project_id must be set to access instructions or categories")
 
@@ -604,7 +613,9 @@ class MemoryClient:
             APIError: If the API request fails.
             ValueError: If org_id or project_id are not set.
         """
-        logger.warning("update_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.update() method instead.")
+        logger.warning(
+            "update_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.update() method instead."
+        )
         if not (self.org_id and self.project_id):
             raise ValueError("org_id and project_id must be set to update instructions or categories")
 
@@ -816,6 +827,16 @@ class MemoryClient:
             raise ValueError("Please provide both org_id and project_id")
 
         return {k: v for k, v in kwargs.items() if v is not None}
+
+    # Faster version for internal use by _validate_api_key, avoids function call overhead in hot loop
+    def _prepare_params_fast(self):
+        """Prepare query parameters for API requests (optimized for hottest path)."""
+        # Specialized for internal _validate_api_key call (no kwargs expected)
+        if self.org_id and self.project_id:
+            return {"org_id": self.org_id, "project_id": self.project_id}
+        elif self.org_id or self.project_id:
+            raise ValueError("Please provide both org_id and project_id")
+        return {}
 
 
 class AsyncMemoryClient:
@@ -1330,7 +1351,9 @@ class AsyncMemoryClient:
             APIError: If the API request fails.
             ValueError: If org_id or project_id are not set.
         """
-        logger.warning("get_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.get() method instead.")
+        logger.warning(
+            "get_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.get() method instead."
+        )
         if not (self.org_id and self.project_id):
             raise ValueError("org_id and project_id must be set to access instructions or categories")
 
@@ -1368,7 +1391,9 @@ class AsyncMemoryClient:
             APIError: If the API request fails.
             ValueError: If org_id or project_id are not set.
         """
-        logger.warning("update_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.update() method instead.")
+        logger.warning(
+            "update_project() method is going to be deprecated in version v1.0 of the package. Please use the client.project.update() method instead."
+        )
         if not (self.org_id and self.project_id):
             raise ValueError("org_id and project_id must be set to update instructions or categories")
 
