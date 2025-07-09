@@ -34,9 +34,13 @@ class SupabaseConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def validate_extra_fields(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        allowed_fields = set(cls.model_fields.keys())
-        input_fields = set(values.keys())
-        extra_fields = input_fields - allowed_fields
+        allowed_fields = getattr(cls, "_allowed_fields", None)
+        if allowed_fields is None:
+            # The following is only needed once/class; after that, it's cached.
+            allowed_fields = frozenset(cls.model_fields.keys())
+            setattr(cls, "_allowed_fields", allowed_fields)
+        extra_fields = set(values)
+        extra_fields.difference_update(allowed_fields)
         if extra_fields:
             raise ValueError(
                 f"Extra fields not allowed: {', '.join(extra_fields)}. Please input only the following fields: {', '.join(allowed_fields)}"
