@@ -20,14 +20,25 @@ def setup_config():
 
 def get_user_id():
     config_path = os.path.join(mem0_dir, "config.json")
-    if not os.path.exists(config_path):
-        return "anonymous_user"
-
     try:
         with open(config_path, "r") as config_file:
-            config = json.load(config_file)
-            user_id = config.get("user_id")
-            return user_id
+            # Minimize memory and parsing by loading just the user_id field
+            for line in config_file:
+                if '"user_id"' in line:
+                    # Use a lightweight parsing to extract the user_id value
+                    line = line.strip()
+                    # Assumes: "user_id": "some_value"
+                    split = line.split(":", 1)
+                    if len(split) == 2:
+                        val = split[1].strip().rstrip(",").strip()
+                        if val.startswith('"') and val.endswith('"'):
+                            return val[1:-1]
+                        if val == "null":
+                            return None
+                        return val
+            return "anonymous_user"  # If key not found
+    except FileNotFoundError:
+        return "anonymous_user"
     except Exception:
         return "anonymous_user"
 
